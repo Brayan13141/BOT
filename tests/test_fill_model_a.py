@@ -320,8 +320,9 @@ def _apply_decision(
         fee_model=decision.fee_model,
         execution_id=decision.execution_id,
     )
+    fill_event_id = str(uuid.uuid4())
     store.append_domain_event(OrderFillReceived(
-        event_id=str(uuid.uuid4()),
+        event_id=fill_event_id,
         schema_version=1,
         event_ts_ms=decision.event_ts_ms,
         order_id=order.order_id,
@@ -343,6 +344,7 @@ def _apply_decision(
         fee=decision.fee,
         fill_ts_ms=decision.event_ts_ms,
         event_id=str(uuid.uuid4()),
+        causation_id=fill_event_id,
         correlation_id=order.order_id,
     )
     store.append_cost_entry(cost_entry)
