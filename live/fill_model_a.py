@@ -89,7 +89,10 @@ class FillModelA:
             fill_price = tick.ask if order.side == OrderSide.BUY else tick.bid
             fee_model  = FeeModel.TAKER
         else:  # LIMIT
-            assert order.limit_price is not None
+            if order.limit_price is None:
+                raise ValueError(
+                    f"LIMIT order {order.order_id!r} has no limit_price — OSM invariant violated."
+                )
             if order.side == OrderSide.BUY:
                 if tick.price > order.limit_price:
                     return None

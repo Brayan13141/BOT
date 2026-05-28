@@ -37,7 +37,7 @@ def _make_market_order(
     qty: str = "1.0",
     ts: int = 1_000,
 ):
-    """Return a SUBMITTED MARKET order ready for FillModelA evaluation (immediate taker path)."""
+    """Return a SUBMITTED (not ACKNOWLEDGED) MARKET order for immediate taker path evaluation."""
     osm = OrderStateMachine()
     order = osm.create_order(
         symbol="BTCUSDT",
