@@ -530,6 +530,10 @@ def test_replay_fidelity_partial_fills_two_ticks(tmp_path):
     assert replayed.liquidity_role == order.liquidity_role  # both fills MAKER → LiquidityRole.MAKER
     assert len(replayed.fills)     == 2
 
+    # Verify the replay traversed the intermediate PARTIALLY_FILLED state
+    replayed_transition_states = [t.to_state for t in replayed.transitions]
+    assert OrderState.PARTIALLY_FILLED in replayed_transition_states
+
     # Cost ledger: 2 entries, aggregated correctly
     with EventStore(tmp_path) as store:
         entries = store.get_cost_entries_by_order(order.order_id)
