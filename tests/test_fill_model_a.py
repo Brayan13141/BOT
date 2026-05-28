@@ -85,3 +85,99 @@ def test_fill_decision_is_frozen():
     )
     with pytest.raises((AttributeError, TypeError)):
         decision.fill_price = Decimal("0")  # type: ignore[misc]
+
+
+# ── Task 2: MARKET orders ─────────────────────────────────────────────────────
+
+def test_market_buy_fills_at_ask():
+    order, _ = _make_market_order(side="BUY", qty="1.0")
+    tick = _make_tick(ask="65005", volume="10.0")
+    decision = FillModelA.evaluate(order, tick)
+
+    assert decision is not None
+    assert decision.fill_price  == Decimal("65005")
+    assert decision.fill_qty    == Decimal("1.0")
+    assert decision.fee_model   == FeeModel.TAKER
+    assert decision.event_ts_ms == tick.timestamp_ms
+
+
+def test_market_sell_fills_at_bid():
+    order, _ = _make_market_order(side="SELL", qty="0.5")
+    tick = _make_tick(bid="64995", volume="10.0")
+    decision = FillModelA.evaluate(order, tick)
+
+    assert decision is not None
+    assert decision.fill_price == Decimal("64995")
+    assert decision.fill_qty   == Decimal("0.5")
+    assert decision.fee_model  == FeeModel.TAKER
+
+
+def test_market_buy_partial_when_volume_less_than_qty():
+    order, _ = _make_market_order(side="BUY", qty="2.0")
+    tick = _make_tick(ask="65005", volume="0.5")
+    decision = FillModelA.evaluate(order, tick)
+
+    assert decision is not None
+    assert decision.fill_qty == Decimal("0.5")  # capped by tick.volume
+
+
+def test_market_order_zero_volume_returns_none():
+    order, _ = _make_market_order(side="BUY", qty="1.0")
+    tick = _make_tick(volume="0")
+    assert FillModelA.evaluate(order, tick) is None
+
+
+def test_market_order_raises_on_terminal_state():
+    order, osm = _make_market_order(side="BUY", qty="1.0")
+    osm.fill(
+        order,
+        fill_price=Decimal("65005"),
+        fill_qty=Decimal("1.0"),
+        event_ts_ms=2_000,
+        fee_model=FeeModel.TAKER,
+        execution_id="exec-term-001",
+    )
+    assert order.state == OrderState.FILLED
+    with pytest.raises(ValueError, match="terminal"):
+        FillModelA.evaluate(order, _make_tick())
+
+
+def test_applying_same_fill_decision_twice_raises_duplicate():
+    """
+    FillDecision carries an execution_id. Applying it twice must raise DuplicateEventError.
+    Verifies that FillModelA decisions are compatible with OSM idempotency guarantees.
+    """
+    from live.order_state_machine import DuplicateEventError
+
+    order, osm = _make_market_order(side="BUY", qty="2.0")
+    tick = _make_tick(ask="65005", volume="1.0")  # partial fill: 1.0 of 2.0
+    decision = FillModelA.evaluate(order, tick)
+    assert decision is not None
+
+    # First application succeeds — PARTIALLY_FILLED
+    osm.fill(
+        order,
+        fill_price=decision.fill_price,
+        fill_qty=decision.fill_qty,
+        event_ts_ms=decision.event_ts_ms,
+        fee_model=decision.fee_model,
+        execution_id=decision.execution_id,
+    )
+    assert order.state == OrderState.PARTIALLY_FILLED
+    assert len(order.fills) == 1
+
+    # Second application with the same execution_id must be rejected
+    with pytest.raises(DuplicateEventError):
+        osm.fill(
+            order,
+            fill_price=decision.fill_price,
+            fill_qty=decision.fill_qty,
+            event_ts_ms=decision.event_ts_ms + 1,
+            fee_model=decision.fee_model,
+            execution_id=decision.execution_id,  # same id → rejected
+        )
+
+    # OSM state unchanged: exactly 1 fill, not 2
+    assert len(order.fills)  == 1
+    assert order.filled_qty  == Decimal("1.0")
+    assert order.state       == OrderState.PARTIALLY_FILLED
