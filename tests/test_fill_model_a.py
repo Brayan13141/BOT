@@ -431,3 +431,117 @@ def test_market_order_immediate_taker_pipeline(tmp_path):
     assert len(entries) == 1
     assert entries[0].taker_fee    > Decimal("0")   # TAKER fill → fee charged
     assert entries[0].maker_rebate == Decimal("0")
+
+
+# ── Task 5: Replay Fidelity ───────────────────────────────────────────────────
+
+from live.execution_replay import ExecutionReplay
+
+
+def test_replay_fidelity_limit_order_single_fill(tmp_path):
+    """
+    Core property: live run == replay run.
+
+    Runs a LIMIT BUY through the full pipeline, persists all domain events,
+    then reconstructs via ExecutionReplay and compares all economically relevant fields.
+    Bit-identical financial quantities after round-trip through EventStore.
+    """
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        qty=Decimal("0.02"),
+        limit_price=Decimal("65000"),
+        event_ts_ms=1_000,
+    )
+    arrival_price = Decimal("65050")
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+        osm.acknowledge(order, event_ts_ms=1_002)
+        _persist_ack(store, order, 1_002)
+
+        fill_tick = _make_tick(price="64990", bid="64985", ask="64995",
+                               volume="0.02", ts_ms=1_003)
+        decision = FillModelA.evaluate(order, fill_tick)
+        assert decision is not None
+        _apply_decision(osm, store, order, decision, arrival_price)
+
+        replayed = ExecutionReplay(store).replay_order(order.order_id)
+
+    # State + inventory
+    assert replayed.state          == order.state           == OrderState.FILLED
+    assert replayed.filled_qty     == order.filled_qty      == Decimal("0.02")
+    assert replayed.avg_fill_price == order.avg_fill_price  == Decimal("65000")
+    assert replayed.liquidity_role == order.liquidity_role  # derived from fills, must match
+    assert len(replayed.fills)     == len(order.fills)      == 1
+
+    # Financial precision: fill price + qty survive EventStore round-trip
+    assert replayed.fills[0].price == order.fills[0].price
+    assert replayed.fills[0].qty   == order.fills[0].qty
+
+
+def test_replay_fidelity_partial_fills_two_ticks(tmp_path):
+    """
+    Replay fidelity with partial fills: two ticks fill one order in two steps.
+
+    Verifies that EventStore + ExecutionReplay reconstructs the intermediate
+    PARTIALLY_FILLED state and the final FILLED state with identical quantities.
+    Also verifies that 2 CostLedgerEntries are persisted and summarize correctly.
+    """
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        qty=Decimal("0.02"),
+        limit_price=Decimal("65000"),
+        event_ts_ms=1_000,
+    )
+    arrival_price = Decimal("65020")
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+        osm.acknowledge(order, event_ts_ms=1_002)
+        _persist_ack(store, order, 1_002)
+
+        # First partial fill: 0.01 of 0.02
+        tick1 = _make_tick(price="64990", volume="0.01", ts_ms=1_003)
+        d1 = FillModelA.evaluate(order, tick1)
+        assert d1 is not None
+        _apply_decision(osm, store, order, d1, arrival_price)
+        assert order.state == OrderState.PARTIALLY_FILLED
+
+        # Second fill: remaining 0.01 (tick volume > remaining_qty)
+        tick2 = _make_tick(price="64980", volume="0.05", ts_ms=1_004)
+        d2 = FillModelA.evaluate(order, tick2)
+        assert d2 is not None
+        assert d2.fill_qty == Decimal("0.01")  # capped at remaining_qty
+        _apply_decision(osm, store, order, d2, arrival_price)
+
+        replayed = ExecutionReplay(store).replay_order(order.order_id)
+
+    assert replayed.state          == OrderState.FILLED
+    assert replayed.filled_qty     == Decimal("0.02")
+    assert replayed.avg_fill_price == order.avg_fill_price
+    assert replayed.liquidity_role == order.liquidity_role  # both fills MAKER → LiquidityRole.MAKER
+    assert len(replayed.fills)     == 2
+
+    # Cost ledger: 2 entries, aggregated correctly
+    with EventStore(tmp_path) as store:
+        entries = store.get_cost_entries_by_order(order.order_id)
+    assert len(entries) == 2
+    summary = CostLedger.summarize_order(entries)
+    assert summary.total_fill_qty == Decimal("0.02")
+    assert summary.fill_count     == 2
+    # Net cost invariant holds across two fills
+    expected_net = (
+        summary.total_taker_fee - summary.total_maker_rebate
+        + summary.total_slippage
+        + summary.total_latency_cost
+        + summary.total_inventory_cost
+    )
+    assert summary.total_net_cost == expected_net
