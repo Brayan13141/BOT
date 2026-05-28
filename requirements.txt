@@ -1,0 +1,17 @@
+# Data & Research
+pandas>=2.0
+numpy>=1.26
+scipy>=1.11
+statsmodels>=0.14
+scikit-learn>=1.3
+requests>=2.31
+
+# Notebooks
+jupyter>=1.0
+ipykernel>=6.0
+
+# Execution (Phase 3)
+ccxt>=4.0
+
+# Dev
+pytest>=8.0

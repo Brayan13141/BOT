@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Data (large files)
+data/raw/*.csv
+data/raw/*.parquet
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+.env
+config/secrets.py
+
+# OS
+.DS_Store
+Thumbs.db
