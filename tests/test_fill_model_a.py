@@ -268,3 +268,164 @@ def test_market_taker_fee_uses_taker_rate():
     )
     assert decision.fee       == expected_fee
     assert decision.fee_model == FeeModel.TAKER
+
+
+# ── Task 4: Pipeline helpers + integration tests ──────────────────────────────
+
+from live.cost_ledger import CostLedger
+from live.event_models import OrderAcknowledged, OrderFillReceived, OrderSubmitted
+from live.event_store import EventStore
+
+
+def _persist_submit(store: EventStore, order, submit_ts_ms: int) -> None:
+    """Persist OrderSubmitted domain event to EventStore."""
+    store.append_domain_event(OrderSubmitted(
+        event_id=str(uuid.uuid4()),
+        schema_version=1,
+        event_ts_ms=submit_ts_ms,
+        order_id=order.order_id,
+        symbol=order.symbol,
+        side=order.side.value,
+        order_type=order.order_type.value,
+        qty=order.qty,
+        limit_price=order.limit_price,
+        created_ts_ms=order.created_ts_ms,
+    ))
+
+
+def _persist_ack(store: EventStore, order, ack_ts_ms: int) -> None:
+    """Persist OrderAcknowledged domain event to EventStore."""
+    store.append_domain_event(OrderAcknowledged(
+        event_id=str(uuid.uuid4()),
+        schema_version=1,
+        event_ts_ms=ack_ts_ms,
+        order_id=order.order_id,
+        submitted_ts_ms=order.submitted_ts_ms,
+    ))
+
+
+def _apply_decision(
+    osm,
+    store: EventStore,
+    order,
+    decision: FillDecision,
+    arrival_price: Decimal,
+) -> None:
+    """Drive OSM.fill(), persist OrderFillReceived, compute and persist CostLedgerEntry."""
+    osm.fill(
+        order,
+        fill_price=decision.fill_price,
+        fill_qty=decision.fill_qty,
+        event_ts_ms=decision.event_ts_ms,
+        fee_model=decision.fee_model,
+        execution_id=decision.execution_id,
+    )
+    store.append_domain_event(OrderFillReceived(
+        event_id=str(uuid.uuid4()),
+        schema_version=1,
+        event_ts_ms=decision.event_ts_ms,
+        order_id=order.order_id,
+        fill_id=decision.execution_id,
+        price=decision.fill_price,
+        qty=decision.fill_qty,
+        fee=decision.fee,
+        fee_asset="USDT",
+        fee_model=decision.fee_model.value,
+    ))
+    cost_entry = CostLedger.compute_fill_cost(
+        fill_id=decision.execution_id,
+        order_id=order.order_id,
+        side=order.side.value,
+        fill_price=decision.fill_price,
+        fill_qty=decision.fill_qty,
+        arrival_price=arrival_price,
+        fee_model=decision.fee_model.value,
+        fee=decision.fee,
+        fill_ts_ms=decision.event_ts_ms,
+        event_id=str(uuid.uuid4()),
+        correlation_id=order.order_id,
+    )
+    store.append_cost_entry(cost_entry)
+
+
+def test_limit_buy_full_pipeline_single_fill(tmp_path):
+    """
+    LIMIT BUY: create → submit → ack → non-triggering tick → triggering tick →
+    OSM reaches FILLED → cost entry persisted.
+    """
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        qty=Decimal("0.01"),
+        limit_price=Decimal("65000"),
+        event_ts_ms=1_000,
+    )
+    arrival_price = Decimal("65050")  # midprice at order creation time
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+        osm.acknowledge(order, event_ts_ms=1_002)
+        _persist_ack(store, order, 1_002)
+
+        # Tick that does NOT trigger fill (price above limit)
+        assert FillModelA.evaluate(order, _make_tick(price="65010", ts_ms=1_003)) is None
+        assert order.state == OrderState.ACKNOWLEDGED
+
+        # Tick that triggers fill
+        fill_tick = _make_tick(price="64990", bid="64985", ask="64995",
+                               volume="0.01", ts_ms=1_004)
+        decision = FillModelA.evaluate(order, fill_tick)
+        assert decision is not None
+        _apply_decision(osm, store, order, decision, arrival_price)
+
+    assert order.state          == OrderState.FILLED
+    assert order.filled_qty     == Decimal("0.01")
+    assert order.avg_fill_price == Decimal("65000")  # fills at limit_price
+    assert decision.fee_model   == FeeModel.MAKER
+
+    with EventStore(tmp_path) as store:
+        entries = store.get_cost_entries_by_order(order.order_id)
+    assert len(entries) == 1
+    assert entries[0].fill_price   == Decimal("65000")
+    assert entries[0].taker_fee    == Decimal("0")    # MAKER fill → no taker fee
+    assert entries[0].maker_rebate > Decimal("0")     # rebate credited
+
+
+def test_market_order_immediate_taker_pipeline(tmp_path):
+    """
+    MARKET BUY: fills immediately from SUBMITTED state (IMMEDIATE_TAKER_FILL path).
+    No ACK required. Verifies the immediate taker pipeline branch.
+    """
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        qty=Decimal("0.01"),
+        event_ts_ms=1_000,
+    )
+    arrival_price = Decimal("65005")
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+
+        tick = _make_tick(price="65005", bid="65000", ask="65005",
+                          volume="0.01", ts_ms=1_002)
+        decision = FillModelA.evaluate(order, tick)
+        assert decision is not None
+        assert decision.fee_model  == FeeModel.TAKER
+        assert decision.fill_price == Decimal("65005")  # tick.ask
+        _apply_decision(osm, store, order, decision, arrival_price)
+
+    assert order.state      == OrderState.FILLED
+    assert order.filled_qty == Decimal("0.01")
+
+    with EventStore(tmp_path) as store:
+        entries = store.get_cost_entries_by_order(order.order_id)
+    assert len(entries) == 1
+    assert entries[0].taker_fee    > Decimal("0")   # TAKER fill → fee charged
+    assert entries[0].maker_rebate == Decimal("0")
