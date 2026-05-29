@@ -199,3 +199,101 @@ def test_taker_fee_uses_taker_rate():
 
     expected_fee = (Decimal("100000") * Decimal("1.0") * Decimal("0.0004")).quantize(Decimal("0.00000001"))
     assert result.fills[0].fee == expected_fee
+
+
+# ── Task 3: MAKER queue (resting LIMIT) ───────────────────────────────────────
+
+def test_maker_buy_no_fill_when_no_volume_through():
+    """Resting BUY @ P: SELL prints above P do not reach us -> no fill."""
+    order, _ = _make_limit_order(side="BUY", qty="1.0", limit_price="65000")
+    trades = [_agg(101, "65010", "5.0", "SELL")]   # 65010 > 65000 -> not through P
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert result.fills == []
+    assert result.volume_through == Decimal("0")
+    assert result.prints_consumed == 0
+
+
+def test_maker_buy_fills_at_limit_price_passive_invariant():
+    """
+    Passive-price invariant: a SELL print at 49990 fills our BUY limit @ 50000 AT 50000.
+    queue_ahead=0 -> the through-volume fills us immediately.
+    """
+    order, _ = _make_limit_order(side="BUY", qty="0.3", limit_price="50000")
+    trades = [_agg(101, "49990", "1.0", "SELL")]   # through P, qty 1.0 >= 0.3
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert len(result.fills) == 1
+    assert result.fills[0].fill_price == Decimal("50000")   # NOT 49990
+    assert result.fills[0].fee_model  == FeeModel.MAKER
+    assert result.fully_filled is True
+    assert result.volume_through == Decimal("1.0")
+    assert result.prints_consumed == 1
+
+
+def test_maker_queue_ahead_consumed_before_fill():
+    """
+    queue_ahead=2.0 BTC. First 2.0 BTC of through-volume is eaten by the queue
+    (no fill); volume beyond fills us.
+    """
+    order, _ = _make_limit_order(side="BUY", qty="0.5", limit_price="50000")
+    trades = [
+        _agg(101, "49999", "1.5", "SELL"),   # eats 1.5 of queue, 0 fill
+        _agg(102, "49998", "1.0", "SELL"),   # eats 0.5 queue, 0.5 available -> fills 0.5
+    ]
+    result = FillModelC(Decimal("2.0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert result.queue_consumed == Decimal("2.0")
+    assert result.queue_remaining == Decimal("0")
+    assert result.filled_qty == Decimal("0.5")
+    assert result.fully_filled is True
+    assert len(result.fills) == 1
+    assert result.fills[0].fill_qty == Decimal("0.5")
+    assert result.fills[0].event_ts_ms == 102_000      # stamped from the filling print
+    assert result.volume_through == Decimal("2.5")
+    assert result.prints_consumed == 2                 # both prints processed
+
+
+def test_maker_partial_fill_when_through_volume_insufficient():
+    """queue_ahead=0, through-volume < order.qty -> partial fill."""
+    order, _ = _make_limit_order(side="BUY", qty="1.0", limit_price="50000")
+    trades = [_agg(101, "49995", "0.4", "SELL")]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert result.filled_qty == Decimal("0.4")
+    assert result.remaining_qty == Decimal("0.6")
+    assert result.fully_filled is False
+
+
+def test_maker_sell_fills_on_buy_through():
+    """Resting SELL @ P fills on BUY prints with price >= P, at P."""
+    order, _ = _make_limit_order(side="SELL", qty="0.3", limit_price="50000")
+    trades = [_agg(101, "50010", "1.0", "BUY")]   # 50010 >= 50000 -> through P
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert len(result.fills) == 1
+    assert result.fills[0].fill_price == Decimal("50000")
+    assert result.fills[0].fee_model  == FeeModel.MAKER
+
+
+def test_maker_ignores_same_side_prints():
+    """Resting BUY is filled by SELL aggressors only; BUY prints are ignored."""
+    order, _ = _make_limit_order(side="BUY", qty="0.3", limit_price="50000")
+    trades = [
+        _agg(101, "49990", "5.0", "BUY"),    # same side as a buyer aggressor -> ignored
+        _agg(102, "49990", "0.3", "SELL"),   # opposite, through P -> fills
+    ]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    assert len(result.fills) == 1
+    assert result.prints_consumed == 1
+    assert result.volume_through == Decimal("0.3")
+
+
+def test_maker_fee_uses_maker_rebate_rate():
+    order, _ = _make_limit_order(side="BUY", qty="1.0", limit_price="50000")
+    trades = [_agg(101, "49990", "1.0", "SELL")]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+
+    expected_fee = (Decimal("50000") * Decimal("1.0") * Decimal("0.0001")).quantize(Decimal("0.00000001"))
+    assert result.fills[0].fee == expected_fee

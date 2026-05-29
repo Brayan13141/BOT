@@ -60,7 +60,8 @@ class FillEvaluationResult:
     queue_ahead:     the simulation hypothesis (model config), always present.
     queue_consumed:  how much of queue_ahead was eaten (<= queue_ahead); 0 for taker.
     queue_remaining: queue_ahead - queue_consumed.
-    prints_consumed: qualifying prints the fold processed (maker + taker).
+    prints_consumed: qualifying prints the fold processed
+                     (opposite-side through P for maker; same-side fillers for taker).
     """
     fills:                     list[FillDecision]
     active_since_agg_trade_id: int
@@ -102,7 +103,8 @@ class FillModelC:
         """
         Fold over trades with agg_trade_id > active_since_agg_trade_id and return fills.
 
-        MARKET orders take the TAKER walk. (LIMIT routing added in later tasks.)
+        MARKET orders take the TAKER walk. LIMIT orders take the maker queue walk.
+        (Marketable-limit -> taker routing added in Task 4.)
 
         Raises:
             ValueError: if order is in a terminal state.
@@ -117,8 +119,83 @@ class FillModelC:
 
         if order.order_type == OrderType.MARKET:
             return self._taker_walk(order, window, active_since_agg_trade_id)
-        # LIMIT routing is added in Task 3 / Task 4. Placeholder until then:
-        return self._taker_walk(order, window, active_since_agg_trade_id)
+        # LIMIT: maker queue. (Marketable-limit -> taker routing added in Task 4.)
+        return self._maker_queue(order, window, active_since_agg_trade_id)
+
+    @staticmethod
+    def _qualifies_maker(order_side: OrderSide, trade: AggTrade, limit_price: Decimal) -> bool:
+        """Opposite-side aggressor trading through the resting limit price."""
+        if order_side == OrderSide.BUY:
+            return trade.side == OrderSide.SELL and trade.price <= limit_price
+        return trade.side == OrderSide.BUY and trade.price >= limit_price
+
+    def _maker_queue(
+        self,
+        order: Order,
+        window: list[AggTrade],
+        active_since_agg_trade_id: int,
+    ) -> FillEvaluationResult:
+        """
+        Opposite flow through P, gated by queue_ahead. Fills at limit price (passive).
+
+        For each qualifying print: accumulate volume_through, consume queue_ahead first
+        (does not fill), then fill from any remaining print volume up to remaining_qty.
+        """
+        if order.limit_price is None:
+            raise ValueError(
+                f"LIMIT order {order.order_id!r} has no limit_price — OSM invariant violated."
+            )
+        limit_price = order.limit_price
+        remaining = order.remaining_qty
+        fills: list[FillDecision] = []
+        volume_through = Decimal("0")
+        queue_consumed = Decimal("0")
+        prints_consumed = 0
+
+        for t in window:
+            if not self._qualifies_maker(order.side, t, limit_price):
+                continue
+            volume_through += t.qty
+            prints_consumed += 1                      # every qualifying print is processed
+
+            # 1. consume the queue ahead of us first (does NOT fill us)
+            if queue_consumed < self.queue_ahead:
+                eaten = min(t.qty, self.queue_ahead - queue_consumed)
+                queue_consumed += eaten
+                available = t.qty - eaten
+            else:
+                available = t.qty
+
+            # 2. volume beyond the queue fills us, at the limit price
+            if available > Decimal("0") and remaining > Decimal("0"):
+                fill_qty = min(available, remaining)
+                fee = (limit_price * fill_qty * MAKER_REBATE_RATE).quantize(FEE_PRECISION)
+                fills.append(FillDecision(
+                    fill_price=limit_price,
+                    fill_qty=fill_qty,
+                    fee_model=FeeModel.MAKER,
+                    fee=fee,
+                    execution_id=self._new_id(),
+                    event_ts_ms=t.timestamp_ms,
+                ))
+                remaining -= fill_qty
+
+            if remaining <= Decimal("0"):
+                break
+
+        filled = order.remaining_qty - remaining
+        return FillEvaluationResult(
+            fills=fills,
+            active_since_agg_trade_id=active_since_agg_trade_id,
+            volume_through=volume_through,
+            queue_ahead=self.queue_ahead,
+            queue_consumed=queue_consumed,
+            queue_remaining=self.queue_ahead - queue_consumed,
+            filled_qty=filled,
+            remaining_qty=remaining,
+            fully_filled=(remaining == Decimal("0")),
+            prints_consumed=prints_consumed,
+        )
 
     def _taker_walk(
         self,
