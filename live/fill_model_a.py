@@ -14,6 +14,7 @@ Goal: validate the complete simulation pipeline end-to-end.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -71,9 +72,17 @@ class FillModelA:
     """Stateless fill engine. No persistent state."""
 
     @staticmethod
-    def evaluate(order: Order, tick: Tick) -> FillDecision | None:
+    def evaluate(
+        order: Order,
+        tick: Tick,
+        execution_id_factory: Callable[[], str] | None = None,
+    ) -> FillDecision | None:
         """
         Evaluate whether order fills against tick. Returns FillDecision or None.
+
+        execution_id_factory: optional callable returning a string ID.
+            Defaults to uuid4. Pass a deterministic factory for golden tests
+            comparing FillModelA vs FillModelB vs FillModelC.
 
         Raises:
             ValueError: if order is in a terminal state.
@@ -108,11 +117,12 @@ class FillModelA:
         rate     = TAKER_FEE_RATE if fee_model == FeeModel.TAKER else MAKER_REBATE_RATE
         fee      = (fill_price * fill_qty * rate).quantize(FEE_PRECISION)
 
+        id_fn = execution_id_factory if execution_id_factory is not None else (lambda: str(uuid.uuid4()))
         return FillDecision(
             fill_price=fill_price,
             fill_qty=fill_qty,
             fee_model=fee_model,
             fee=fee,
-            execution_id=str(uuid.uuid4()),
+            execution_id=id_fn(),
             event_ts_ms=tick.timestamp_ms,
         )

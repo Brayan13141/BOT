@@ -575,3 +575,12 @@ def test_same_tick_produces_identical_economics_different_execution_id():
 
     # execution_id is unique per evaluation (UUID4)
     assert d1.execution_id != d2.execution_id
+
+
+def test_evaluate_uses_injected_execution_id_factory():
+    """Injectable factory enables deterministic IDs for golden A vs B vs C tests."""
+    ids = iter(["exec-factory-001"])
+    order, _ = _make_market_order(side="BUY", qty="0.01")
+    tick = _make_tick(volume="10.0")
+    decision = FillModelA.evaluate(order, tick, execution_id_factory=ids.__next__)
+    assert decision.execution_id == "exec-factory-001"
