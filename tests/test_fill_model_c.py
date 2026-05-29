@@ -311,3 +311,153 @@ def test_limit_empty_window_returns_empty_maker_result():
     assert result.fills == []
     assert result.fully_filled is False
     assert result.remaining_qty == Decimal("1.0")
+
+
+# ── Task 5: Invariants + pipeline integration ─────────────────────────────────
+
+import uuid
+
+from live.cost_ledger import CostLedger
+from live.event_models import OrderAcknowledged, OrderFillReceived, OrderSubmitted
+from live.event_store import EventStore
+from live.execution_replay import ExecutionReplay
+
+
+def test_determinism_two_runs_identical_economics():
+    """
+    Golden re-run: two passes over the same inputs with the same deterministic
+    factory produce identical fills (prices, qtys, fees, execution_ids).
+    """
+    trades = [
+        _agg(101, "49999", "1.5", "SELL"),
+        _agg(102, "49998", "1.0", "SELL"),
+    ]
+
+    order_a, _ = _make_limit_order(side="BUY", qty="0.5", limit_price="50000")
+    order_b, _ = _make_limit_order(side="BUY", qty="0.5", limit_price="50000")
+
+    r1 = FillModelC(Decimal("2.0"), execution_id_factory=_counter_factory()).evaluate(
+        order_a, trades, active_since_agg_trade_id=100)
+    r2 = FillModelC(Decimal("2.0"), execution_id_factory=_counter_factory()).evaluate(
+        order_b, trades, active_since_agg_trade_id=100)
+
+    assert [(f.fill_price, f.fill_qty, f.fee, f.execution_id, f.event_ts_ms) for f in r1.fills] \
+        == [(f.fill_price, f.fill_qty, f.fee, f.execution_id, f.event_ts_ms) for f in r2.fills]
+    assert r1.queue_consumed == r2.queue_consumed
+    assert r1.volume_through == r2.volume_through
+
+
+def test_default_factory_unique_execution_ids():
+    """Without an injected factory, each fill gets a distinct uuid4 id."""
+    order, _ = _make_market_order(side="BUY", qty="0.5")
+    trades = [
+        _agg(101, "100000", "0.2", "BUY"),
+        _agg(102, "100001", "0.3", "BUY"),
+    ]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+    ids = [f.execution_id for f in result.fills]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+
+
+def _persist_submit(store, order, ts):
+    store.append_domain_event(OrderSubmitted(
+        event_id=str(uuid.uuid4()), schema_version=1, event_ts_ms=ts,
+        order_id=order.order_id, symbol=order.symbol, side=order.side.value,
+        order_type=order.order_type.value, qty=order.qty,
+        limit_price=order.limit_price, created_ts_ms=order.created_ts_ms,
+    ))
+
+
+def _persist_ack(store, order, ts):
+    store.append_domain_event(OrderAcknowledged(
+        event_id=str(uuid.uuid4()), schema_version=1, event_ts_ms=ts,
+        order_id=order.order_id, submitted_ts_ms=order.submitted_ts_ms,
+    ))
+
+
+def _apply_decision(osm, store, order, decision, arrival_price):
+    osm.fill(
+        order, fill_price=decision.fill_price, fill_qty=decision.fill_qty,
+        event_ts_ms=decision.event_ts_ms, fee_model=decision.fee_model,
+        execution_id=decision.execution_id,
+    )
+    store.append_domain_event(OrderFillReceived(
+        event_id=str(uuid.uuid4()), schema_version=1, event_ts_ms=decision.event_ts_ms,
+        order_id=order.order_id, fill_id=decision.execution_id,
+        price=decision.fill_price, qty=decision.fill_qty, fee=decision.fee,
+        fee_asset="USDT", fee_model=decision.fee_model.value,
+    ))
+    store.append_cost_entry(CostLedger.compute_fill_cost(
+        fill_id=decision.execution_id, order_id=order.order_id, side=order.side.value,
+        fill_price=decision.fill_price, fill_qty=decision.fill_qty,
+        arrival_price=arrival_price, fee_model=decision.fee_model.value,
+        fee=decision.fee, fill_ts_ms=decision.event_ts_ms,
+        event_id=str(uuid.uuid4()), correlation_id=order.order_id,
+    ))
+
+
+def test_pipeline_maker_multi_partial_then_replay(tmp_path):
+    """
+    Full pipeline with a multi-print maker fill, then replay fidelity.
+    queue_ahead=0; two SELL prints through P each fill part of the order.
+    """
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT", side=OrderSide.BUY, order_type=OrderType.LIMIT,
+        qty=Decimal("0.5"), limit_price=Decimal("50000"), event_ts_ms=1_000,
+    )
+    model = FillModelC(Decimal("0"), execution_id_factory=_counter_factory())
+    arrival_price = Decimal("50050")
+    trades = [
+        _agg(101, "49995", "0.2", "SELL", ts_ms=1_003),
+        _agg(102, "49994", "0.3", "SELL", ts_ms=1_004),
+    ]
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+        osm.acknowledge(order, event_ts_ms=1_002)
+        _persist_ack(store, order, 1_002)
+
+        result = model.evaluate(order, trades, active_since_agg_trade_id=100)
+        assert len(result.fills) == 2
+        assert result.fully_filled is True
+        for decision in result.fills:
+            _apply_decision(osm, store, order, decision, arrival_price)
+
+        replayed = ExecutionReplay(store).replay_order(order.order_id)
+
+    assert order.state == OrderState.FILLED
+    assert order.filled_qty == Decimal("0.5")
+    assert order.avg_fill_price == Decimal("50000")        # both fills at limit price
+    assert replayed.state          == order.state
+    assert replayed.filled_qty     == order.filled_qty
+    assert replayed.avg_fill_price == order.avg_fill_price
+    assert replayed.liquidity_role == order.liquidity_role
+    assert len(replayed.fills)     == 2
+
+
+def test_pipeline_cost_ledger_records_maker_rebate(tmp_path):
+    osm = OrderStateMachine()
+    order = osm.create_order(
+        symbol="BTCUSDT", side=OrderSide.BUY, order_type=OrderType.LIMIT,
+        qty=Decimal("0.5"), limit_price=Decimal("50000"), event_ts_ms=1_000,
+    )
+    model = FillModelC(Decimal("0"), execution_id_factory=_counter_factory())
+    trades = [_agg(101, "49995", "0.5", "SELL", ts_ms=1_003)]
+
+    with EventStore(tmp_path) as store:
+        osm.submit(order, event_ts_ms=1_001)
+        _persist_submit(store, order, 1_001)
+        osm.acknowledge(order, event_ts_ms=1_002)
+        _persist_ack(store, order, 1_002)
+        result = model.evaluate(order, trades, active_since_agg_trade_id=100)
+        for decision in result.fills:
+            _apply_decision(osm, store, order, decision, Decimal("50050"))
+
+    with EventStore(tmp_path) as store:
+        entries = store.get_cost_entries_by_order(order.order_id)
+    assert len(entries) == 1
+    assert entries[0].maker_rebate > Decimal("0")
+    assert entries[0].taker_fee   == Decimal("0")
