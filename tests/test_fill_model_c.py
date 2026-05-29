@@ -297,3 +297,17 @@ def test_maker_fee_uses_maker_rebate_rate():
 
     expected_fee = (Decimal("50000") * Decimal("1.0") * Decimal("0.0001")).quantize(Decimal("0.00000001"))
     assert result.fills[0].fee == expected_fee
+
+
+# ── LIMIT routing: a LIMIT reaching C is a resting maker ───────────────────────
+# (maker-vs-taker is decided upstream by the OSM via per-fill fee_model; C does
+#  not infer marketability from the tape — see 2026-05-29 design decision.)
+
+def test_limit_empty_window_returns_empty_maker_result():
+    """A resting LIMIT with no qualifying trades -> empty result (no fills)."""
+    order, _ = _make_limit_order(side="BUY", qty="1.0", limit_price="64990")
+    result = FillModelC(Decimal("0")).evaluate(order, [], active_since_agg_trade_id=100)
+
+    assert result.fills == []
+    assert result.fully_filled is False
+    assert result.remaining_qty == Decimal("1.0")

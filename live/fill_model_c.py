@@ -103,8 +103,9 @@ class FillModelC:
         """
         Fold over trades with agg_trade_id > active_since_agg_trade_id and return fills.
 
-        MARKET orders take the TAKER walk. LIMIT orders take the maker queue walk.
-        (Marketable-limit -> taker routing added in Task 4.)
+        MARKET orders take the TAKER walk. LIMIT orders take the maker queue walk
+        (a LIMIT reaching C is a resting maker; a marketable limit is taker-converted
+        upstream by the OSM and never arrives here as a resting limit).
 
         Raises:
             ValueError: if order is in a terminal state.
@@ -119,7 +120,8 @@ class FillModelC:
 
         if order.order_type == OrderType.MARKET:
             return self._taker_walk(order, window, active_since_agg_trade_id)
-        # LIMIT: maker queue. (Marketable-limit -> taker routing added in Task 4.)
+        # LIMIT orders evaluated by C are resting makers. Maker-vs-taker is decided
+        # upstream by the OSM (per-fill fee_model); C does not infer it from the tape.
         return self._maker_queue(order, window, active_since_agg_trade_id)
 
     @staticmethod
