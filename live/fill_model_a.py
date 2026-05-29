@@ -53,7 +53,9 @@ class FillDecision:
     fill_price:   price at which the fill executes
     fill_qty:     quantity filled (may be < order.remaining_qty for partials)
     fee_model:    MAKER or TAKER
-    fee:          actual fee amount (>= 0). For MAKER this is the rebate.
+    fee:          actual fee amount (>= 0).
+                  TAKER: add to net_cost (it's a cost).
+                  MAKER: subtract from net_cost (it's a rebate / income).
     execution_id: UUID4 string — pass to osm.fill(execution_id=...) for idempotency
     event_ts_ms:  tick.timestamp_ms — canonical exchange clock for this fill
     """

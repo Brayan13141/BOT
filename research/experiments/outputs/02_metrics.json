@@ -1,0 +1,58 @@
+{
+  "spec_hash": "65d674ca66c2",
+  "verdict": "NO-GO",
+  "train": {
+    "split": "train",
+    "n_trades": 353,
+    "win_rate": 0.3173,
+    "breakeven_wr": 0.618,
+    "avg_win_net_pct": 0.1048,
+    "avg_loss_net_pct": 0.1538,
+    "expectancy_net_pct": -0.0717,
+    "total_return_pct": -25.32,
+    "max_drawdown_pct": -25.2,
+    "sharpe_ref": -0.582,
+    "avg_mae_pct": 0.0937,
+    "avg_mfe_pct": 0.1175,
+    "avg_holding_candles": 6.8,
+    "pct_tp": 28.0,
+    "pct_sl": 63.5,
+    "pct_max_hold": 6.8,
+    "pct_eod": 1.7,
+    "avg_pullback_stoch_min": 29.29
+  },
+  "holdout": {
+    "split": "holdout",
+    "n_trades": 60,
+    "win_rate": 0.3167,
+    "breakeven_wr": 0.618,
+    "avg_win_net_pct": 0.115,
+    "avg_loss_net_pct": 0.155,
+    "expectancy_net_pct": -0.0695,
+    "total_return_pct": -4.17,
+    "max_drawdown_pct": -4.02,
+    "sharpe_ref": -0.543,
+    "avg_mae_pct": 0.1017,
+    "avg_mfe_pct": 0.1376,
+    "avg_holding_candles": 5.8,
+    "pct_tp": 31.7,
+    "pct_sl": 65.0,
+    "pct_max_hold": 1.7,
+    "pct_eod": 1.7,
+    "avg_pullback_stoch_min": 28.33,
+    "expectancy_ci_95_lo_pct": -0.0814,
+    "expectancy_ci_95_hi_pct": -0.0558
+  },
+  "required_checks": {
+    "E_net > 0": false,
+    "n_trades >= 100": false,
+    "CI_95_lower > -0.02%": false,
+    "strategy_E_net > baseline_P95": false
+  },
+  "advisory_checks": {
+    "train->holdout degradation < 50%": true,
+    "monthly E_net positive >= 6/12 (holdout only)": false,
+    "max_drawdown < 20%": false,
+    "win_rate > 55%": false
+  }
+}

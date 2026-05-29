@@ -1,0 +1,66 @@
+{
+  "spec_hash": "3509407d0c39",
+  "verdict": "NO-GO",
+  "train": {
+    "split": "train",
+    "n_trades": 474,
+    "win_rate": 0.308,
+    "breakeven_wr": 0.618,
+    "avg_win_net_pct": 0.115,
+    "avg_loss_net_pct": 0.1595,
+    "expectancy_net_pct": -0.0749,
+    "total_return_pct": -35.51,
+    "max_drawdown_pct": -35.48,
+    "sharpe_ref": -0.59,
+    "avg_mae_pct": 0.2319,
+    "avg_mfe_pct": 0.202,
+    "avg_holding_candles": 1.6,
+    "pct_tp": 30.8,
+    "pct_sl": 68.6,
+    "pct_max_hold": 0.2,
+    "pct_eod": 0.4,
+    "avg_pullback_stoch_min": 30.65
+  },
+  "holdout": {
+    "split": "holdout",
+    "n_trades": 290,
+    "win_rate": 0.3517,
+    "breakeven_wr": 0.618,
+    "avg_win_net_pct": 0.115,
+    "avg_loss_net_pct": 0.1593,
+    "expectancy_net_pct": -0.0628,
+    "total_return_pct": -18.21,
+    "max_drawdown_pct": -18.42,
+    "sharpe_ref": -0.478,
+    "avg_mae_pct": 0.1644,
+    "avg_mfe_pct": 0.1849,
+    "avg_holding_candles": 1.3,
+    "pct_tp": 35.2,
+    "pct_sl": 64.5,
+    "pct_max_hold": 0.0,
+    "pct_eod": 0.3,
+    "avg_pullback_stoch_min": 28.55,
+    "expectancy_ci_95_lo_pct": -0.078,
+    "expectancy_ci_95_hi_pct": -0.0481
+  },
+  "required_checks": {
+    "E_net > 0": false,
+    "n_trades >= 100": true,
+    "CI_95_lower > -0.02%": false,
+    "strategy_E_net > baseline_P95": false
+  },
+  "advisory_checks": {
+    "train->holdout degradation < 50%": true,
+    "monthly E_net positive >= 6/12 (holdout only)": false,
+    "max_drawdown < 20%": false,
+    "win_rate > 55%": false
+  },
+  "infrastructure": {
+    "regime_window": 48,
+    "cs_window": 48,
+    "bootstrap_block": 4,
+    "split_date": "2024-03-07",
+    "dataset": "BTCUSDT_M5.csv",
+    "dataset_range": "2019-01-01 to 2026-05-25"
+  }
+}

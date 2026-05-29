@@ -172,7 +172,7 @@ def test_applying_same_fill_decision_twice_raises_duplicate():
             order,
             fill_price=decision.fill_price,
             fill_qty=decision.fill_qty,
-            event_ts_ms=decision.event_ts_ms + 1,
+            event_ts_ms=decision.event_ts_ms,
             fee_model=decision.fee_model,
             execution_id=decision.execution_id,  # same id → rejected
         )
@@ -549,3 +549,29 @@ def test_replay_fidelity_partial_fills_two_ticks(tmp_path):
         + summary.total_inventory_cost
     )
     assert summary.total_net_cost == expected_net
+
+
+def test_same_tick_produces_identical_economics_different_execution_id():
+    """
+    Determinism property: same order config + same tick → same fill_price, fill_qty,
+    fee_model, fee — but different execution_id (UUID).
+
+    Proves FillModelA is a pure function of (order_economics, tick) with no hidden state.
+    """
+    order1, _ = _make_limit_order(side="BUY", qty="0.01", limit_price="65000", ts=1_000)
+    order2, _ = _make_limit_order(side="BUY", qty="0.01", limit_price="65000", ts=1_000)
+    tick = _make_tick(price="64990", bid="64985", ask="64995", volume="0.01", ts_ms=2_000)
+
+    d1 = FillModelA.evaluate(order1, tick)
+    d2 = FillModelA.evaluate(order2, tick)
+
+    assert d1 is not None and d2 is not None
+
+    # Economics are identical
+    assert d1.fill_price == d2.fill_price
+    assert d1.fill_qty   == d2.fill_qty
+    assert d1.fee_model  == d2.fee_model
+    assert d1.fee        == d2.fee
+
+    # execution_id is unique per evaluation (UUID4)
+    assert d1.execution_id != d2.execution_id

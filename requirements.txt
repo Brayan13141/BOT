@@ -9,6 +9,10 @@ requests>=2.31
 # Notebooks
 jupyter>=1.0
 ipykernel>=6.0
+matplotlib>=3.8
+
+# Live data (Phase 1)
+websockets>=12.0
 
 # Execution (Phase 3)
 ccxt>=4.0
