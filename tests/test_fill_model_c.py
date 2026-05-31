@@ -313,6 +313,64 @@ def test_limit_empty_window_returns_empty_maker_result():
     assert result.remaining_qty == Decimal("1.0")
 
 
+# ── A: last_agg_trade_id_seen (streaming checkpoint contract) ──────────────────
+# Observed high-water mark of the input window, so FillModelCLive can advance:
+#   next_active_since = result.last_agg_trade_id_seen
+# C reports the fact; the caller owns checkpointing. Reflects the WHOLE window
+# handed in, not just trades consumed before break-on-fill.
+
+def test_last_agg_trade_id_seen_empty_window_is_active_since():
+    """Empty window -> falls back to active_since_agg_trade_id."""
+    order, _ = _make_market_order(side="BUY", qty="1.0")
+    result = FillModelC(Decimal("0")).evaluate(order, [], active_since_agg_trade_id=100)
+    assert result.last_agg_trade_id_seen == 100
+
+
+def test_last_agg_trade_id_seen_all_filtered_falls_back_to_active_since():
+    """All trades <= active_since -> empty window -> fall back to active_since."""
+    order, _ = _make_market_order(side="BUY", qty="1.0")
+    trades = [_agg(99, "99999", "5.0", "BUY"), _agg(100, "100000", "5.0", "BUY")]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+    assert result.last_agg_trade_id_seen == 100
+
+
+def test_last_agg_trade_id_seen_taker_is_window_max_beyond_fill():
+    """Non-empty window (taker): high-water = max id over the whole window."""
+    order, _ = _make_market_order(side="BUY", qty="0.1")
+    trades = [
+        _agg(101, "100000", "0.1", "BUY"),    # fills here, loop breaks
+        _agg(102, "100001", "5.0", "SELL"),   # never consumed, still 'seen'
+        _agg(103, "100002", "5.0", "BUY"),    # never consumed, still 'seen'
+    ]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+    assert result.fully_filled is True
+    assert result.last_agg_trade_id_seen == 103
+
+
+def test_last_agg_trade_id_seen_maker_is_window_max_beyond_fill():
+    """Non-empty window (maker): high-water reflects whole window, not the fill point."""
+    order, _ = _make_limit_order(side="BUY", qty="0.3", limit_price="50000")
+    trades = [
+        _agg(101, "49990", "0.3", "SELL"),    # fills fully here, breaks
+        _agg(102, "49980", "5.0", "SELL"),    # not consumed, still seen
+    ]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+    assert result.fully_filled is True
+    assert result.last_agg_trade_id_seen == 102
+
+
+def test_last_agg_trade_id_seen_excludes_filtered_trades():
+    """High-water is computed over the post-filter window only."""
+    order, _ = _make_market_order(side="BUY", qty="0.1")
+    trades = [
+        _agg(99,  "99999",  "5.0", "BUY"),    # filtered (< active_since)
+        _agg(100, "100000", "5.0", "BUY"),    # filtered (== active_since)
+        _agg(101, "100001", "0.1", "BUY"),    # valid
+    ]
+    result = FillModelC(Decimal("0")).evaluate(order, trades, active_since_agg_trade_id=100)
+    assert result.last_agg_trade_id_seen == 101
+
+
 # ── Task 5: Invariants + pipeline integration ─────────────────────────────────
 
 import uuid

@@ -62,9 +62,15 @@ class FillEvaluationResult:
     queue_remaining: queue_ahead - queue_consumed.
     prints_consumed: qualifying prints the fold processed
                      (opposite-side through P for maker; same-side fillers for taker).
+    last_agg_trade_id_seen: observed high-water mark of the input window
+                     (max agg_trade_id over the post-filter window; falls back to
+                     active_since_agg_trade_id when the window is empty). Lets a
+                     streaming caller advance: next_active_since = last_agg_trade_id_seen.
+                     A reported fact about the input, not a managed checkpoint.
     """
     fills:                     list[FillDecision]
     active_since_agg_trade_id: int
+    last_agg_trade_id_seen:    int
     volume_through:            Decimal
     queue_ahead:               Decimal
     queue_consumed:            Decimal
@@ -107,6 +113,17 @@ class FillModelC:
         (a LIMIT reaching C is a resting maker; a marketable limit is taker-converted
         upstream by the OSM and never arrives here as a resting limit).
 
+        Precondition:
+            trades must be ordered by agg_trade_id in non-decreasing order. Ordering
+            is enforced upstream by the data pipeline (fail-fast); C does NOT sort —
+            a defensive sort would add cost, hide pipeline errors, and break fail-fast.
+            Anti-lookahead, causality, break-on-fill and execution timestamps all rely
+            on this ordering.
+
+        Deferred hardening:
+            FillModelC assumes validated aggTrades with qty > 0. Garbage prints
+            (qty <= 0) are not guarded here; data quality is enforced by the validator.
+
         Raises:
             ValueError: if order is in a terminal state.
         """
@@ -117,12 +134,16 @@ class FillModelC:
             )
 
         window = [t for t in trades if t.agg_trade_id > active_since_agg_trade_id]
+        last_seen = max(
+            (t.agg_trade_id for t in window),
+            default=active_since_agg_trade_id,
+        )
 
         if order.order_type == OrderType.MARKET:
-            return self._taker_walk(order, window, active_since_agg_trade_id)
+            return self._taker_walk(order, window, active_since_agg_trade_id, last_seen)
         # LIMIT orders evaluated by C are resting makers. Maker-vs-taker is decided
         # upstream by the OSM (per-fill fee_model); C does not infer it from the tape.
-        return self._maker_queue(order, window, active_since_agg_trade_id)
+        return self._maker_queue(order, window, active_since_agg_trade_id, last_seen)
 
     @staticmethod
     def _qualifies_maker(order_side: OrderSide, trade: AggTrade, limit_price: Decimal) -> bool:
@@ -136,6 +157,7 @@ class FillModelC:
         order: Order,
         window: list[AggTrade],
         active_since_agg_trade_id: int,
+        last_agg_trade_id_seen: int,
     ) -> FillEvaluationResult:
         """
         Opposite flow through P, gated by queue_ahead. Fills at limit price (passive).
@@ -189,6 +211,7 @@ class FillModelC:
         return FillEvaluationResult(
             fills=fills,
             active_since_agg_trade_id=active_since_agg_trade_id,
+            last_agg_trade_id_seen=last_agg_trade_id_seen,
             volume_through=volume_through,
             queue_ahead=self.queue_ahead,
             queue_consumed=queue_consumed,
@@ -204,6 +227,7 @@ class FillModelC:
         order: Order,
         window: list[AggTrade],
         active_since_agg_trade_id: int,
+        last_agg_trade_id_seen: int,
     ) -> FillEvaluationResult:
         """Same-side print walk. No queue. Fills at realized print price (TAKER)."""
         remaining = order.remaining_qty
@@ -231,6 +255,7 @@ class FillModelC:
         return FillEvaluationResult(
             fills=fills,
             active_since_agg_trade_id=active_since_agg_trade_id,
+            last_agg_trade_id_seen=last_agg_trade_id_seen,
             volume_through=Decimal("0"),
             queue_ahead=self.queue_ahead,
             queue_consumed=Decimal("0"),
