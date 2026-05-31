@@ -1,0 +1,98 @@
+{
+  "config": {
+    "delta_ticks": 5,
+    "order_qty": "0.01",
+    "lambda_per_sec": 0.016666666666666666,
+    "seed": 28,
+    "ttl_ms": 60000,
+    "grid": [
+      "0",
+      "0.5",
+      "2",
+      "5",
+      "15",
+      "50"
+    ]
+  },
+  "spec_hash": "ff6535337a0d",
+  "summary": {
+    "0": {
+      "queue_ahead": 0.0,
+      "n": 86148,
+      "fill_rate": 0.7522983702465524,
+      "fill_rate_ci": [
+        0.7494045053555481,
+        0.755169734645376
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 6091.0,
+      "queue_consumed_mean": 0.0,
+      "queue_remaining_mean": 0.0
+    },
+    "0.5": {
+      "queue_ahead": 0.5,
+      "n": 86148,
+      "fill_rate": 0.725518874495055,
+      "fill_rate_ci": [
+        0.7225288828878104,
+        0.7284887538611179
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 8527.0,
+      "queue_consumed_mean": 0.369691263871477,
+      "queue_remaining_mean": 0.130308736128523
+    },
+    "2": {
+      "queue_ahead": 2.0,
+      "n": 86148,
+      "fill_rate": 0.6619074151460278,
+      "fill_rate_ci": [
+        0.6587412555858255,
+        0.6650591354669876
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 13063.0,
+      "queue_consumed_mean": 1.4090051887449506,
+      "queue_remaining_mean": 0.5909948112550494
+    },
+    "5": {
+      "queue_ahead": 5.0,
+      "n": 86148,
+      "fill_rate": 0.5613130891024748,
+      "fill_rate_ci": [
+        0.5579967262629473,
+        0.5646239839134908
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 18626.0,
+      "queue_consumed_mean": 3.2367298718484476,
+      "queue_remaining_mean": 1.7632701281515533
+    },
+    "15": {
+      "queue_ahead": 15.0,
+      "n": 86148,
+      "fill_rate": 0.36271300552537494,
+      "fill_rate_ci": [
+        0.3595086199340022,
+        0.3659296346557871
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 26630.0,
+      "queue_consumed_mean": 7.74162511027534,
+      "queue_remaining_mean": 7.25837488972466
+    },
+    "50": {
+      "queue_ahead": 50.0,
+      "n": 86148,
+      "fill_rate": 0.14036309606723313,
+      "fill_rate_ci": [
+        0.13805950560946553,
+        0.14269875969034437
+      ],
+      "reach_rate": 0.7527162557459256,
+      "median_time_to_fill_ms": 32760.0,
+      "queue_consumed_mean": 15.552579525932117,
+      "queue_remaining_mean": 34.44742047406788
+    }
+  }
+}
