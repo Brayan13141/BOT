@@ -10,6 +10,10 @@ venv/
 data/raw/*.csv
 data/raw/*.parquet
 
+# Download runtime logs (regenerated; not source)
+data/raw/*.log
+data/raw/*.log.err
+
 # Jupyter
 .ipynb_checkpoints/
 

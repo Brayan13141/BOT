@@ -1,0 +1,11 @@
+{
+  "rows_raw": 41559041,
+  "rows_clean": 41544041,
+  "duplicates_removed": 15000,
+  "rewind_points": 19,
+  "min_agg_trade_id": 3231966237,
+  "max_agg_trade_id": 3273510277,
+  "expected_contiguous_count": 41544041,
+  "gap_free": true,
+  "canonicalization_passed": true
+}
