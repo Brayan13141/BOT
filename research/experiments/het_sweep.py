@@ -32,6 +32,9 @@ TTL_CANDIDATES_MS = [60_000, 300_000, 900_000]    # S28A-0 candidates
 TTL_FROZEN_MS     = 60_000                         # 60s straddles median through-volume (BTC P50=4.879); 300s/900s saturate the grid (Caso B). recommended_ttl=300s from the calib notebook is an artifact (min|t-300000|), ignored.
 QUEUE_AHEAD_GRID_FROZEN = [Decimal("0"), Decimal("0.5"), Decimal("2"), Decimal("5"), Decimal("15"), Decimal("50")]  # spans P0->P90 @ 60s: maps decay (q->5~=median) AND plateau (q->50~=P90=55.860)
 SIDE_SEED = {OrderSide.BUY: 0, OrderSide.SELL: 1}  # independent streams under SEED_EXPERIMENT
+# --- S28B depth sweep config (FROZEN by 2026-06-01-s28b-depth-sweep-design.md) ---
+DELTA_GRID_TICKS  = [1, 5, 20]                     # swept placement depth; 5t = shared anchor with S28A
+QUEUE_FIXED_S28B  = Decimal("5")                   # fixed queue_ahead (median through-volume scale; S28A anchor)
 
 
 @dataclass
@@ -98,12 +101,14 @@ class GeneratedOrder:
 
 
 def generate_passive_orders(tape: Tape, side: OrderSide, lam_per_sec: float,
-                            ttl_ms: int, seed) -> list[GeneratedOrder]:
+                            ttl_ms: int, seed, delta: Decimal = DELTA) -> list[GeneratedOrder]:
     """
     Poisson arrivals (exponential inter-arrival), P1 passive placement off the tape
     reference (last print with ts <= arrival). Edge-censored: only arrivals with a full
     TTL of tape ahead. A fresh OrderStateMachine per order avoids cross-order timestamp
     coupling. `seed` is a sampling parameter (reproducibility only), not a phenomenon param.
+    `delta` is the placement-depth phenomenon parameter (offset of L from the reference);
+    it defaults to the module DELTA (non-breaking) and is swept by the S28B depth sweep.
     """
     rng = np.random.default_rng(seed)
     t0 = int(tape.ts[0])
@@ -119,7 +124,7 @@ def generate_passive_orders(tape: Tape, side: OrderSide, lam_per_sec: float,
         if ref_index < 0:
             continue
         ref_price = Decimal(tape.price[ref_index])
-        limit_price = ref_price - DELTA if side == OrderSide.BUY else ref_price + DELTA
+        limit_price = ref_price - delta if side == OrderSide.BUY else ref_price + delta
         osm = OrderStateMachine()
         order = osm.create_order(symbol="BTCUSDT", side=side, order_type=OrderType.LIMIT,
                                  qty=ORDER_QTY, limit_price=limit_price, event_ts_ms=arrival_ts)
@@ -215,6 +220,40 @@ def run_queue_ahead_sweep(tape: Tape, gen_orders: list[GeneratedOrder], ttl_ms: 
     return rows
 
 
+def run_depth_sweep(tape: Tape, delta_ticks_list: list[int], q_fixed: Decimal, ttl_ms: int,
+                    lam_per_sec: float = LAMBDA_PER_SEC, seed_experiment: int = SEED_EXPERIMENT,
+                    side_seed: dict = SIDE_SEED) -> list[dict]:
+    """
+    S28B: queue_ahead is FIXED at q_fixed; the swept axis is placement depth Δ (in ticks).
+    Δ changes the order's resting level (L = ref ∓ Δ·TICK), so orders and windows are
+    regenerated per Δ. Arrivals are paired across Δ (same seed => same arrival times).
+    One row per (Δ, order). FillModelC is consumed unmodified at the single fixed queue.
+    """
+    model = FillModelC(q_fixed)
+    rows: list[dict] = []
+    for dticks in delta_ticks_list:
+        delta = TICK * dticks
+        gen: list[GeneratedOrder] = []
+        for side in (OrderSide.BUY, OrderSide.SELL):
+            gen += generate_passive_orders(tape, side, lam_per_sec, ttl_ms,
+                                           seed=[seed_experiment, side_seed[side]], delta=delta)
+        for g in gen:
+            _, window = build_window(tape, g.ref_index, g.arrival_ts, ttl_ms)
+            r = model.evaluate(g.order, window, active_since_agg_trade_id=g.active_since)
+            ttf = (r.fills[-1].event_ts_ms - g.arrival_ts) if r.fully_filled else None
+            rows.append({
+                "delta_ticks": dticks,
+                "arrival_ts": g.arrival_ts,
+                "filled": r.fully_filled,
+                "time_to_fill_ms": ttf,
+                "reached": r.prints_consumed > 0,
+                "queue_consumed": r.queue_consumed,
+                "queue_remaining": r.queue_remaining,
+                "through_volume": r.volume_through,
+            })
+    return rows
+
+
 def summarize_sweep(rows: list[dict], grid: list[Decimal]) -> dict[Decimal, dict]:
     """Aggregate per queue_ahead: fill_rate (+Wilson CI), reach_rate, conditional median TTF."""
     summary: dict[Decimal, dict] = {}
@@ -234,3 +273,40 @@ def summarize_sweep(rows: list[dict], grid: list[Decimal]) -> dict[Decimal, dict
             "queue_remaining_mean": float(np.mean([float(r["queue_remaining"]) for r in qr])) if n else 0.0,
         }
     return summary
+
+
+def summarize_depth_sweep(rows: list[dict], delta_ticks_list: list[int]) -> dict[int, dict]:
+    """
+    Aggregate per Δ, DECOMPOSED: reach(Δ) × cond_fill(Δ|reached) = fill_rate(Δ).
+    cond_fill is the conditional proportion fills/reaches (Wilson CI over reaches);
+    fill_rate is fills/n (Wilson CI over n). The identity fill_rate == reach × cond_fill
+    holds by construction. median time-to-fill is conditional on fill (right-censored).
+    """
+    summary: dict[int, dict] = {}
+    for d in delta_ticks_list:
+        dr = [r for r in rows if r["delta_ticks"] == d]
+        n = len(dr)
+        reaches = sum(1 for r in dr if r["reached"])
+        fills = sum(1 for r in dr if r["filled"])
+        summary[d] = {
+            "delta_ticks": d,
+            "n": n,
+            "reach_rate": (reaches / n) if n else 0.0,
+            "reach_ci": wilson_ci(reaches, n),
+            "cond_fill": (fills / reaches) if reaches else 0.0,
+            "cond_fill_ci": wilson_ci(fills, reaches),
+            "fill_rate": (fills / n) if n else 0.0,
+            "fill_rate_ci": wilson_ci(fills, n),
+            "median_time_to_fill_ms": conditional_median_time_to_fill(dr),
+        }
+    return summary
+
+
+def reach_monotonicity_ok(summary: dict[int, dict], delta_ticks_list: list[int]) -> bool:
+    """
+    Sanity expectation (NOT a PASS/FAIL acceptance criterion): a deeper level is harder to
+    reach, so reach_rate should be non-increasing in Δ. False => raise a visible alarm
+    (a bug, or an extremely interesting finding). Reported, not gating.
+    """
+    reaches = [summary[d]["reach_rate"] for d in delta_ticks_list]
+    return all(reaches[i] >= reaches[i + 1] for i in range(len(reaches) - 1))

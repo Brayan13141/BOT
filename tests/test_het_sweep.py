@@ -6,10 +6,11 @@ import pytest
 
 from research.experiments.het_sweep import (
     Tape, build_window, load_canonical_tape, generate_passive_orders,
-    GeneratedOrder, DELTA, ORDER_QTY,
+    GeneratedOrder, DELTA, TICK, ORDER_QTY, SIDE_SEED,
     wilson_ci, conditional_median_time_to_fill, through_volume_percentiles,
     measure_through_volume, acceptance_verdict, PROBE_QUEUE_AHEAD,
-    run_queue_ahead_sweep, summarize_sweep,
+    run_queue_ahead_sweep, summarize_sweep, run_depth_sweep, summarize_depth_sweep,
+    reach_monotonicity_ok,
 )
 from live.fill_model_c import AggTrade, FillModelC
 from live.order_state_machine import OrderStateMachine
@@ -227,3 +228,98 @@ def test_summarize_sweep_reports_fill_rate_and_ci():
     assert s0["reach_rate"] == 1.0
     assert s0["median_time_to_fill_ms"] == 100.0
     assert 0.0 <= s0["fill_rate_ci"][0] <= s0["fill_rate_ci"][1] <= 1.0
+
+
+# --- S28B depth sweep ---
+
+def test_generator_accepts_custom_delta():
+    tape = _big_tape()
+    # default delta == module DELTA (non-breaking)
+    d_default = generate_passive_orders(tape, OrderSide.BUY, lam_per_sec=1/10, ttl_ms=5000, seed=[28, 0])
+    # explicit delta = DELTA reproduces the default placement exactly
+    d_same = generate_passive_orders(tape, OrderSide.BUY, lam_per_sec=1/10, ttl_ms=5000, seed=[28, 0],
+                                     delta=DELTA)
+    assert [str(g.order.limit_price) for g in d_default] == [str(g.order.limit_price) for g in d_same]
+    # a deeper delta moves a BUY limit further BELOW the reference
+    deep = generate_passive_orders(tape, OrderSide.BUY, lam_per_sec=1/10, ttl_ms=5000, seed=[28, 0],
+                                   delta=Decimal("2.0"))
+    g0, deep0 = d_default[0], deep[0]
+    ref = Decimal(tape.price[g0.ref_index])
+    assert g0.order.limit_price == ref - DELTA          # 0.50 below
+    assert deep0.order.limit_price == ref - Decimal("2.0")  # 2.00 below
+    assert deep0.arrival_ts == g0.arrival_ts            # same arrivals (delta does not touch the RNG)
+
+
+def test_s28b_constants():
+    from research.experiments.het_sweep import DELTA_GRID_TICKS, QUEUE_FIXED_S28B
+    assert DELTA_GRID_TICKS == [1, 5, 20]
+    assert QUEUE_FIXED_S28B == Decimal("5")
+
+
+def test_depth_sweep_arrivals_paired_across_delta():
+    """Same seed => identical arrival stream at every depth (paired design)."""
+    tape = _big_tape()
+    rows = run_depth_sweep(tape, [1, 20], q_fixed=Decimal("5"), ttl_ms=5000,
+                           lam_per_sec=1/10, seed_experiment=28, side_seed=SIDE_SEED)
+    a1 = sorted(r["arrival_ts"] for r in rows if r["delta_ticks"] == 1)
+    a20 = sorted(r["arrival_ts"] for r in rows if r["delta_ticks"] == 20)
+    assert len(a1) > 0
+    assert a1 == a20
+    assert {r["delta_ticks"] for r in rows} == {1, 20}
+
+
+def test_depth_sweep_matches_manual_composition():
+    """Driver wiring: run_depth_sweep([5]) == manual generate(delta=DELTA)+window+evaluate."""
+    tape = _big_tape()
+    q = Decimal("0")
+    rows = run_depth_sweep(tape, [5], q_fixed=q, ttl_ms=5000,
+                           lam_per_sec=1/10, seed_experiment=28, side_seed=SIDE_SEED)
+    got = [(r["arrival_ts"], r["filled"], r["reached"]) for r in rows]
+
+    delta = TICK * 5
+    model = FillModelC(q)
+    expected = []
+    for side in (OrderSide.BUY, OrderSide.SELL):
+        gen = generate_passive_orders(tape, side, 1/10, 5000, seed=[28, SIDE_SEED[side]], delta=delta)
+        for g in gen:
+            _, w = build_window(tape, g.ref_index, g.arrival_ts, 5000)
+            r = model.evaluate(g.order, w, active_since_agg_trade_id=g.active_since)
+            expected.append((g.arrival_ts, r.fully_filled, r.prints_consumed > 0))
+    assert got == expected
+
+
+def test_summarize_depth_sweep_decomposes_reach_and_conditional():
+    rows = [
+        {"delta_ticks": 5, "filled": True,  "reached": True,  "time_to_fill_ms": 100},
+        {"delta_ticks": 5, "filled": False, "reached": True,  "time_to_fill_ms": None},  # reached, queue too deep
+        {"delta_ticks": 5, "filled": False, "reached": False, "time_to_fill_ms": None},  # never reached
+        {"delta_ticks": 5, "filled": True,  "reached": True,  "time_to_fill_ms": 300},
+    ]
+    summ = summarize_depth_sweep(rows, [5])
+    s = summ[5]
+    assert s["n"] == 4
+    assert s["reach_rate"] == 0.75                       # 3 reached / 4
+    assert s["cond_fill"] == pytest.approx(2 / 3)        # 2 fills / 3 reached
+    assert s["fill_rate"] == 0.5                         # 2 fills / 4
+    assert s["fill_rate"] == pytest.approx(s["reach_rate"] * s["cond_fill"])  # decomposition identity
+    assert s["median_time_to_fill_ms"] == 200.0
+    assert 0.0 <= s["reach_ci"][0] <= s["reach_ci"][1] <= 1.0
+    assert 0.0 <= s["cond_fill_ci"][0] <= s["cond_fill_ci"][1] <= 1.0
+    assert 0.0 <= s["fill_rate_ci"][0] <= s["fill_rate_ci"][1] <= 1.0
+
+
+def test_summarize_depth_sweep_handles_zero_reach():
+    rows = [{"delta_ticks": 20, "filled": False, "reached": False, "time_to_fill_ms": None}]
+    s = summarize_depth_sweep(rows, [20])[20]
+    assert s["reach_rate"] == 0.0
+    assert s["cond_fill"] == 0.0          # guard: no reached orders -> 0, not ZeroDivisionError
+    assert s["fill_rate"] == 0.0
+    assert s["median_time_to_fill_ms"] is None
+
+
+def test_reach_monotonicity_ok_flags_violation():
+    good = {1: {"reach_rate": 0.9}, 5: {"reach_rate": 0.7}, 20: {"reach_rate": 0.3}}
+    bad  = {1: {"reach_rate": 0.7}, 5: {"reach_rate": 0.9}, 20: {"reach_rate": 0.3}}  # 5 > 1 bump
+    assert reach_monotonicity_ok(good, [1, 5, 20]) is True
+    assert reach_monotonicity_ok(bad, [1, 5, 20]) is False
+    assert reach_monotonicity_ok({5: {"reach_rate": 0.5}}, [5]) is True  # single point trivially ok
