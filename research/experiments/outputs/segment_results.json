@@ -1,0 +1,99 @@
+{
+  "spec_hash": "7a809aaca7f3",
+  "horizon_ms": 300000,
+  "n_pairs_full": 78,
+  "min_n_segment": 15,
+  "conclusion": "Caso A \u2014 todos NULOS. Cerrar definitivamente la familia Exp10.",
+  "segments": [
+    {
+      "segmentacion": "S1_direction",
+      "segment": "BUY",
+      "N": 40,
+      "delta_obs": -0.00048075337746738303,
+      "p_perm": 0.9053,
+      "ci_low": -0.0011493660002630868,
+      "ci_high": 0.00016011045618446104,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S1_direction",
+      "segment": "SELL",
+      "N": 38,
+      "delta_obs": 0.0003105941181225688,
+      "p_perm": 0.3089,
+      "ci_low": -0.0008007219502844139,
+      "ci_high": 0.0014536337362309171,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S3_session",
+      "segment": "Asia",
+      "N": 27,
+      "delta_obs": 0.0001408380963330081,
+      "p_perm": 0.4078,
+      "ci_low": -0.0009125905855944962,
+      "ci_high": 0.0012663396953656568,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S3_session",
+      "segment": "London",
+      "N": 30,
+      "delta_obs": -0.00020672531073459436,
+      "p_perm": 0.6226,
+      "ci_low": -0.0014434927928174803,
+      "ci_high": 0.0010922125542606278,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S3_session",
+      "segment": "NY",
+      "N": 21,
+      "delta_obs": -0.0002394489470948139,
+      "p_perm": 0.693,
+      "ci_low": -0.0010901305827621538,
+      "ci_high": 0.0006043756979317077,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S4_intensity",
+      "segment": "Q1",
+      "N": 20,
+      "delta_obs": 0.00042007630700797267,
+      "p_perm": 0.305,
+      "ci_low": -0.0006401905275183606,
+      "ci_high": 0.0018262675709604255,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S4_intensity",
+      "segment": "Q2",
+      "N": 19,
+      "delta_obs": 1.8712954130083257e-05,
+      "p_perm": 0.502,
+      "ci_low": -0.0011167025036261777,
+      "ci_high": 0.0009191680203116742,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S4_intensity",
+      "segment": "Q3",
+      "N": 19,
+      "delta_obs": -0.0002774287316227494,
+      "p_perm": 0.6281,
+      "ci_low": -0.0017571869645051886,
+      "ci_high": 0.001374990900479397,
+      "outcome": "NULO"
+    },
+    {
+      "segmentacion": "S4_intensity",
+      "segment": "Q4",
+      "N": 20,
+      "delta_obs": -0.0005456742488918248,
+      "p_perm": 0.785,
+      "ci_low": -0.001826820264109,
+      "ci_high": 0.000732612876542725,
+      "outcome": "NULO"
+    }
+  ]
+}
